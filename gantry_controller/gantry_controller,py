@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+import os
+import math
+import numpy as np
+
+import rclpy
+from rclpy.node import Node
+from ament_index_python import get_resource
+from control_msgs.msg import JointJog
+from sensor_msgs.msg import JointState
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import Twist, PoseStamped, Quaternion
+from rclpy.qos import QoSProfile
+# from apriltag_msgs.msg import AprilTagDetectionArray
+# from apriltag_msgs.msg import AprilTagDetection
+from std_msgs.msg import Float32MultiArray
+
+
+class GantryAutoController(Node):
+    def __init__(self):
+        super().__init__('Gantry_Controller')
+
+        self._namespace = ""
+        self._jog_topic = "containerbruecke/joint_jog"
+        self._joint_state_topic = "containerbruecke/joint_state"
+        self._odom_topic = "containerbruecke/odom"
+        self._goal_topic = "goal_pose"
+        self._cmd_vel_topic = "cmd_vel"
+        self._joint_jog_publisher = None
+        self._cmd_vel_subscriber = None
+
+        self._base_pos = [0.0]*3 # [x, y, theta]
+        # JointState in order: [Achse1, Achse2_A, Achse2_B, Achse6, Achse4, Achse5, Achse3, Achse7]
+        self._joint_states = [0.0]*3
+        self._goal_position = [0.0]*2 # [x, y]
+        self._goal_orientation = Quaternion()
+        self.kp = [0.1, 0.1, 0.1]
+         
+                           #  [boom tilt, extension, pitcher, yaw, pitcher extension] 
+        self.max_velocities = [133.3, 250.0, 191.67]   #EFFETIVE MAX VELOCITIES
+        # ARRAY OF VELOCITY PERCENTAGES TO AVOID OVERSTRESSING THE MOTORS 
+        self.velocity_percentage_initial = [0.8, 0.8, 0.8]
+        # ARRAY OF VELOCITY PERCENTAGES FOR THE FIRST SLOWDOWN 
+        self.velocity_percentage_first = [0.5, 0.5, 0.5]
+        # ARRAY OF VELOCITY PERCENTAGES FOR THE SECOND SLOWDOWN 
+        self.velocity_percentage_second = [0.2, 0.2, 0.2]
+        # ARRAY OF PERCENTAGES OF ERROR REACHED FOR THE FIRST VELOCITY CHANGE
+        self.encoder_encode_percentage_first = [0.3, 0.3, 0.3]
+        # ARRAY OF PERCENTAGES OF ERROR REACHED FOR THE FIRST VELOCITY CHANGE
+        self.encoder_encode_percentage_second = [0.15, 0.15, 0.15]
+
+        # coefficients for transformation between encoder and real values
+        self.axis_coefficients_encoder_to_geometrical = [0.99903, 0.9026757, 0.1032764] 
+        # intercepts for the linear interpolation
+        self.axis_intercepts_encoder_to_geometrical = [1194.594, 292.50779, 222.8423]
+        # coefficients for transformation between real values and encoder
+        self.axis_coefficients_geometrical_to_encoder = [1.00099758, 1.10781746, 9.68238]
+        # intercepts for the linear interpolation
+        self.axis_intercepts_geometrical_to_encoder = [-1195.7862, -324.0452, -2157.61548] 
+         
+
+        #To make sure the robot remains in it's starting position until it receives a desired geometrical position for it's joints
+        self.initial_position_locker = True
+        self.initial_position_locker_timier = self.create_timer(0.5, self.initial_locker_callback)
+        
+        # in the jointstate message we receive in this order: [Achse6, Achse4, Achse5, Achse3, Achse7]
+        # Switching to ordered is required, it happens in the jointstate subscriber [Achse3, Achse4, Achse5, Achse6, Achse7] 
+        self.desired_geometrical_values = [0.0]*3# Axis 3 to 7
+        self.desired_encoder_values = [0.0]*3
+   
+        # Corresponding toelrance (in mm, for each axis)
+        self.axis_encoder_precision = [0.395, 1.02, 1.02]
+
+        self.initial_error_saved = False
+        self.initial_encoder_error = [0.0]*3
+        self.actual_encoder_error = [0.0]*3
+
+        self._joint_jog_msg = JointJog()
+        self._joint_jog_msg.header.frame_id = "JointJog"
+        self._joint_jog_msg.joint_names = [
+            "Achse1",
+            "Achse2",
+            "Achse3",
+        ]
+
+        if not self._namespace.endswith("/"):
+            self._namespace = self._namespace + "/"
+        self._register_subscribers()
+        self._register_publishers()
+
+    def _register_subscribers(self):
+
+        self._state_subscriber = self.create_subscription(
+            JointState,
+            self._joint_state_topic,
+            self._state_subscription_callback,
+            qos_profile=1,
+        )
+    
+        self.geom_values_subscriber = self.create_subscription(
+            Float32MultiArray,
+            'containerbruecke_geom_goals',
+            self.geom_values_received_callback,
+            qos_profile=1,
+        )    
+
+    def _register_publishers(self):
+        self._unregister_publishers()
+
+        self._joint_jog_publisher = self.create_publisher(
+            JointJog, self._jog_topic, qos_profile=QoSProfile(depth=1)
+        )
+
+    def initial_locker_callback(self):
+        self.initial_position_locker = False
+        self.initial_position_locker_timier.cancel()
+        print('now it s possible to start giving geometrical values to the robot')
+    
+    def geom_values_received_callback(self, msg):
+        for i in range(3):
+            self.desired_geometrical_values[i] = msg.data[i] 
+        self.desired_encoder_values = self.encoder_from_geom_array_transformer(self.desired_geometrical_values)            
+    
+    def _state_subscription_callback(self, msg):
+        if len(msg.name) != 4:
+            self.get_logger().warning("Expected 4 but received %d joints", len(msg.name))
+            return
+        # Initialize array from Axis 3 to 7
+        velocity_token = [0.0]*3
+        positions = [0.0, 0.0, 0.0, 0.0]
+        positions[0] = msg.position[0] 
+        positions[1] = msg.position[1] 
+        positions[2] = msg.position[2] 
+        positions[3] = msg.position[3] 
+        
+        if self.initial_position_locker == True:
+            self.desired_encoder_values = positions
+            self.desired_geometrical_values = self.geom_from_encoder_array_transformer(self.desired_encoder_values)
+            print('starting encoder values', self.desired_encoder_values)
+            print('starting geometrical values', self.desired_geometrical_values)
+
+        for i in range(3):
+            self.actual_encoder_error[i] =  self.desired_encoder_values[i] - positions[i]
+            velocity_token[i] = self.get_velocity_token_from_encoder_error(self.actual_encoder_error[i], i)
+        if self.initial_error_saved != True:
+            self.initial_encoder_error = self.actual_encoder_error
+            self.initial_error_saved = True
+        velocities_command = np.multiply(np.array(velocity_token), np.array(self.max_velocities))
+        self._send_joint_jog(
+            [],
+            [
+                velocities_command[0], # Achse 3
+                velocities_command[1], # Achse 4
+                velocities_command[2], # Achse 5
+                velocities_command[3], # Achse 6
+                velocities_command[4], # Achse 7
+            ],
+        )
+
+
+    def encoder_from_geom_array_transformer(self, geom_value_array):
+        encoder_value_array = [0.0]*3
+        print('diocane')
+        for i in range(3):
+            encoder_value_array[i] =  geom_value_array[i] * self.axis_coefficients_geometrical_to_encoder[i] + self.axis_intercepts_geometrical_to_encoder[i] 
+        return(encoder_value_array)
+    
+    def geom_from_encoder_array_transformer(self, encoder_value_array):
+        print('diomerda')
+        geom_value_array = [0.0]*3
+        for i in range(3):
+            geom_value_array[i] = encoder_value_array[i] * self.axis_coefficients_encoder_to_geometrical[i] + self.axis_intercepts_encoder_to_geometrical[i]
+        return(geom_value_array)
+        
+    def get_velocity_token_from_encoder_error(self, actual_encoder_error, index):
+        # DEFINING IF THE MOTOR HAS TO GO BACKWARDS OR FORWARDS
+        if actual_encoder_error < 0.0:
+            velocity_sign = -1.0
+        else:
+            velocity_sign = 1.0
+        velocity_token = self.velocity_percentage_initial[index] * velocity_sign   
+        #FIRST SLOW DOWN WHEN WE ARE AT 15 OF DIFFERENCE 
+        if abs(actual_encoder_error) < self.encoder_encode_percentage_first[index] * self.initial_encoder_error[index]:       
+            velocity_token = self.velocity_percentage_first[index] * velocity_sign  
+        #SECOND SLOW DOWN
+        if abs(actual_encoder_error) < self.encoder_encode_percentage_second[index] * self.initial_encoder_error[index]:    
+            velocity_token = self.velocity_percentage_second[index] * velocity_sign   
+        #STOPPING WHEN THE ERROR IS NOT RELEVANT
+        if abs(actual_encoder_error) < self.axis_encoder_precision[index]:
+            velocity_token = 0.0
+        return velocity_token
+
+    def _send_joint_jog(self, targets, velocities):
+        if self._joint_jog_publisher is None:
+            return
+        self._joint_jog_msg.header.stamp = self.get_clock().now().to_msg()
+        self._joint_jog_msg.displacements = targets
+        self._joint_jog_msg.velocities = velocities
+        self._joint_jog_publisher.publish(self._joint_jog_msg)
+
+    def _unregister_publishers(self):
+        if self._joint_jog_publisher is not None:
+            self.destroy_publisher(self._joint_jog_publisher)
+            self._joint_jog_publisher = None
+
+def main(args=None):
+    try:
+        rclpy.init(args=args)
+
+        reachstacker_auto_controller = GantryAutoController()
+        rclpy.spin(reachstacker_auto_controller)
+
+        reachstacker_auto_controller.destroy_node()
+        rclpy.shutdown()
+
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == '__main__':
+    main()
