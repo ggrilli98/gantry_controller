@@ -29,20 +29,23 @@ class GantryController(Node):
             "Achse3",
         ]
 
+        # Flag for pause state
+        self.is_paused = False
+
         # Initialize the counter for 50Hz callback calls
-        self.high_freq_counter = 0
+        self.callback_counter = 0
         # Counter for custom value sets
         self.value_set_counter = 0
 
-        # Define custom values
+        # Define custom values with x seconds duration
         self.custom_values = [
-            [60.0, 0.0, 0.0],
-            [0.0, 120.0, 0.0],
-            [0.0, 0.0, -60.0],
-            [0.0, 0.0, 60.0],
-            [0.0, -120.0, 0.0],
-            [-60.0, 0.0, 0.0],
-
+            {"values": [65.0, 0.0, 0.0], "duration": 20},
+            {"values": [0.0, 110.0, 0.0], "duration": 25}, 
+            {"values": [0.0, 0.0, -65.0], "duration": 25}, 
+            {"values": [0.0, 0.0, 65.0], "duration": 25}, 
+            {"values": [0.0, -110.0, 0.0], "duration": 25}, 
+            {"values": [-60.0, 0.0, 0.0], "duration": 20}, 
+            {"values": [0.0, 0.0, -65.0], "duration": 25},
         ]
 
         # Set timer for sending joint jog at 50hz
@@ -53,19 +56,38 @@ class GantryController(Node):
 
     def timer_callback(self):
         """Sending velocity of the axes at 50Hz"""
+        # If all custom values have been sent, send [0.0, 0.0, 0.0] and stop the timer
+        if self.value_set_counter >= len(self.custom_values):
+            self._send_joint_jog([], [0.0, 0.0, 0.0])
+            self.timer.cancel()
+            return
+
+        # If in pause state, just return
+        if self.is_paused:
+            return
+
         # Send the values based on the current value set counter
-        self._send_joint_jog([], self.custom_values[self.value_set_counter])
+        current_values = self.custom_values[self.value_set_counter]["values"]
+        self._send_joint_jog([], current_values)
 
-        # Increment the high frequency counter
-        self.high_freq_counter += 1
+        # Increment the callback counter
+        self.callback_counter += 1
 
-        # Every X calls (Xs * 50Hz), change the custom values
-        if self.high_freq_counter >= 600:
-            self.high_freq_counter = 0
-            self.value_set_counter += 1
-            # If value set counter exceeds the number of sets of custom values, reset it
-            if self.value_set_counter >= len(self.custom_values):
-                self.value_set_counter = 0
+        # Calculate the number of callbacks for the current set's duration
+        num_callbacks_for_duration = self.custom_values[self.value_set_counter]["duration"] * 50  # 50Hz
+
+        # If it's time to switch to the next set of values
+        if self.callback_counter >= num_callbacks_for_duration:
+            self.callback_counter = 0
+            self.is_paused = True
+            # Pause for 3 seconds
+            self.pause_timer = self.create_timer(3, self.pause_callback)
+
+    def pause_callback(self):
+        """Callback after pause duration"""
+        self.is_paused = False
+        self.value_set_counter += 1
+        self.pause_timer.cancel()
 
     def _send_joint_jog(self, targets, velocities):
         if self._joint_jog_publisher is None:
