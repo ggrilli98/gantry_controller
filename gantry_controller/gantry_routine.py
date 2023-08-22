@@ -39,14 +39,15 @@ class GantryController(Node):
 
         # Define custom values with x seconds duration
         self.custom_values = [
-            {"values": [65.0, 0.0, 0.0], "duration": 20},
-            {"values": [0.0, 110.0, 0.0], "duration": 25}, 
-            {"values": [0.0, 0.0, -65.0], "duration": 25}, 
-            {"values": [0.0, 0.0, 65.0], "duration": 25}, 
-            {"values": [0.0, -110.0, 0.0], "duration": 25}, 
-            {"values": [-60.0, 0.0, 0.0], "duration": 20}, 
-            {"values": [0.0, 0.0, -65.0], "duration": 25},
+            {"values": [0.0, 0.0, 65.0], "duration": 24}, # Achse 3 Heben
+            {"values": [0.0, -110.0, 0.0], "duration": 24}, # Aches 2 Zurück
+            {"values": [0.0, 0.0, -65.0], "duration": 24}, # Achse 3 Senken
+            {"values": [0.0, 0.0, 65.0], "duration": 24}, # Achse 3 Heben
+            {"values": [65.0, 0.0, 0.0], "duration": 20}, # Achse 1 Vor
+            {"values": [0.0, 110.0, 0.0], "duration": 24}, # Achse 2 Vor
+            {"values": [0.0, 0.0, -65.0], "duration": 24}, # Achse 3 Senken
         ]
+        # Total time: 164 + 3*6 = 182 seconds
 
         # Set timer for sending joint jog at 50hz
         self.timer = self.create_timer(0.02, self.timer_callback)
