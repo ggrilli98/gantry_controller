@@ -15,11 +15,9 @@ class GantryController(Node):
         self._joint_state_topic = "containerbruecke/joint_state"
         self._joint_jog_publisher = None
 
-        # JointState in order: [Achse1, Achse2_A, Achse2_B, Achse6, Achse4, Achse5, Achse3, Achse7]
+        # JointState in order: [Achse1, Achse2, Achse3]
         self._joint_states = [0.0]*3
-    
-        #  [boom tilt, extension, pitcher, yaw, pitcher extension] 
-        self.max_velocities = [66.65, 125.0, 95.8]   #EFFETIVE MAX VELOCITIES
+        self.max_velocities = [66.65, 125.0, 95.8]   #EFFECTIVE MAX VELOCITIES
 
         self._joint_jog_msg = JointJog()
         self._joint_jog_msg.header.frame_id = "JointJog"
@@ -31,7 +29,6 @@ class GantryController(Node):
 
         # Flag for pause state
         self.is_paused = False
-
         # Initialize the counter for 50Hz callback calls
         self.callback_counter = 0
         # Counter for custom value sets
