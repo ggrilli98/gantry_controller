@@ -36,19 +36,20 @@ class GantryController(Node):
         # Define custom values
         self.custom_values = [
             [0.0, 0.0, 65.0],  # Achse 3 Heben
-            [0.0, -110.0, 0.0],  # Aches 2 Zurück
+            [-65.0, -125.0, 0.0],  # Aches 2 Zurück, Achse 1 Zurück
             [0.0, 0.0, -65.0], # Achse 3 Senken
             [0.0, 0.0, 0.0],  # Pause
             [0.0, 0.0, 65.0], # Achse 3 Heben
-            [65.0, 0.0, 0.0],  # Achse 1 Vor
-            [0.0, 110.0, 0.0],  # Achse 2 Vor
+            [0.0, 125.0, 0.0],  # Achse 2 Vor
             [0.0, 0.0, -65.0],  # Achse 3 Senken
             [0.0, 0.0, 0.0],  # Pause
         ]
        
+        print("Running custom velocity values: ")
         print(self.custom_values)
-
-        self.durations_sec = [20.0, 23.5, 15.0, 3.0, 15.0, 20.0, 23.5, 20.0, 5.0]
+        print("Total Duration [s]: ")
+        self.durations_sec = [12.0, 22.0, 10.0, 3.0, 10.0, 22.0, 12.5, 5.0]
+        print(sum(self.durations_sec))
         self.moving = False
         # Set timer for sending joint jog at 50hz
         self.timer = self.create_timer(0.05, self.timer_callback)
@@ -57,7 +58,7 @@ class GantryController(Node):
         self._register_publishers()
 
         self.time_long = self.node.get_clock().now()
-        print(self.time_long.nanoseconds/1000000000)
+        # print(self.time_long.nanoseconds/1000000000)
         self.time_start_actions[self.i] =  self.time_long.nanoseconds/1000000000
 
     def timer_callback(self):
@@ -65,7 +66,7 @@ class GantryController(Node):
         self._send_joint_jog([float(val) for val in self.custom_values[self.i]], self.durations_sec[self.i])
         self.time_long = self.node.get_clock().now()
         time_difference = self.time_long.nanoseconds/1000000000 - self.time_start_actions[self.i]
-        print(time_difference)
+        # print(time_difference)
 
         if time_difference > self.durations_sec[self.i]:
             self.i = self.i +1
