@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import numpy as np
-
+import time
+import rclpy
+from rclpy.time import Time
 import rclpy
 from rclpy.node import Node
 from control_msgs.msg import JointJog
@@ -26,83 +28,62 @@ class GantryController(Node):
             "Achse2",
             "Achse3",
         ]
+        
+        self.i = 0
+        self.time_start_actions = [0.0]*10
+        self.node = rclpy.create_node("time_example")
 
-        # Flag for pause state
-        self.is_paused = False
-        # Initialize the counter for 50Hz callback calls
-        self.callback_counter = 0
-        # Counter for custom value sets
-        self.value_set_counter = 0
-
-        # Define custom values with x seconds duration
+        # Define custom values
         self.custom_values = [
-            {"values": [0.0, 0.0, 65.0], "duration": 24}, # Achse 3 Heben
-            {"values": [0.0, -110.0, 0.0], "duration": 24}, # Aches 2 Zurück
-            {"values": [0.0, 0.0, -65.0], "duration": 24}, # Achse 3 Senken
-            {"values": [0.0, 0.0, 65.0], "duration": 24}, # Achse 3 Heben
-            {"values": [65.0, 0.0, 0.0], "duration": 20}, # Achse 1 Vor
-            {"values": [0.0, 110.0, 0.0], "duration": 24}, # Achse 2 Vor
-            {"values": [0.0, 0.0, -65.0], "duration": 24}, # Achse 3 Senken
+            [0.0, 0.0, 65.0],  # Achse 3 Heben
+            [0.0, -110.0, 0.0],  # Aches 2 Zurück
+            [0.0, 0.0, -65.0], # Achse 3 Senken
+            [0.0, 0.0, 0.0],  # Pause
+            [0.0, 0.0, 65.0], # Achse 3 Heben
+            [65.0, 0.0, 0.0],  # Achse 1 Vor
+            [0.0, 110.0, 0.0],  # Achse 2 Vor
+            [0.0, 0.0, -65.0],  # Achse 3 Senken
+            [0.0, 0.0, 0.0],  # Pause
         ]
-        # Total time: 164 + 3*6 = 182 seconds
+       
+        print(self.custom_values)
 
+        self.durations_sec = [20.0, 23.5, 15.0, 3.0, 15.0, 20.0, 23.5, 20.0, 5.0]
+        self.moving = False
         # Set timer for sending joint jog at 50hz
-        self.timer = self.create_timer(0.02, self.timer_callback)
-
-        self._register_subscribers()
+        self.timer = self.create_timer(0.05, self.timer_callback)
+        # self.moving_timer = self.create_timer(0.05, self.moving_timer_callback)
+      
         self._register_publishers()
+
+        self.time_long = self.node.get_clock().now()
+        print(self.time_long.nanoseconds/1000000000)
+        self.time_start_actions[self.i] =  self.time_long.nanoseconds/1000000000
 
     def timer_callback(self):
         """Sending velocity of the axes at 50Hz"""
-        # If all custom values have been sent, send [0.0, 0.0, 0.0] and stop the timer
-        if self.value_set_counter >= len(self.custom_values):
-            self._send_joint_jog([], [0.0, 0.0, 0.0])
-            self.timer.cancel()
-            return
+        self._send_joint_jog([float(val) for val in self.custom_values[self.i]], self.durations_sec[self.i])
+        self.time_long = self.node.get_clock().now()
+        time_difference = self.time_long.nanoseconds/1000000000 - self.time_start_actions[self.i]
+        print(time_difference)
 
-        # If in pause state, just return
-        if self.is_paused:
-            return
+        if time_difference > self.durations_sec[self.i]:
+            self.i = self.i +1
+            self.time_start_actions[self.i] =  self.time_long.nanoseconds/1000000000
+            if self.i == 9:
+                print('finished the routine')
+                self._unregister_publishers
+        
+        
 
-        # Send the values based on the current value set counter
-        current_values = self.custom_values[self.value_set_counter]["values"]
-        self._send_joint_jog([], current_values)
-
-        # Increment the callback counter
-        self.callback_counter += 1
-
-        # Calculate the number of callbacks for the current set's duration
-        num_callbacks_for_duration = self.custom_values[self.value_set_counter]["duration"] * 50  # 50Hz
-
-        # If it's time to switch to the next set of values
-        if self.callback_counter >= num_callbacks_for_duration:
-            self.callback_counter = 0
-            self.is_paused = True
-            # Pause for 3 seconds
-            self.pause_timer = self.create_timer(3, self.pause_callback)
-
-    def pause_callback(self):
-        """Callback after pause duration"""
-        self.is_paused = False
-        self.value_set_counter += 1
-        self.pause_timer.cancel()
-
-    def _send_joint_jog(self, targets, velocities):
+    def _send_joint_jog(self, velocities, duration):
         if self._joint_jog_publisher is None:
             return
         self._joint_jog_msg.header.stamp = self.get_clock().now().to_msg()
-        self._joint_jog_msg.displacements = targets
         self._joint_jog_msg.velocities = velocities
+        self._joint_jog_msg.duration = duration
         self._joint_jog_publisher.publish(self._joint_jog_msg)
 
-    def _register_subscribers(self):
-        pass
-        # self._state_subscriber = self.create_subscription(
-        #     JointState,
-        #     self._joint_state_topic,
-        #     self._state_subscription_callback,
-        #     qos_profile=1,
-        # )
 
     def _register_publishers(self):
         self._unregister_publishers()
